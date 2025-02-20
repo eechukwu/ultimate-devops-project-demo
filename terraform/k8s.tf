@@ -1,5 +1,6 @@
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
+  version = "~> 20.0"  # Make sure you're using a recent version
 
   cluster_name                   = local.name
   cluster_version                = local.cluster_version
@@ -8,7 +9,10 @@ module "eks" {
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
-  # Configure aws-auth ConfigMap
+  # Enable managing aws-auth ConfigMap
+  manage_aws_auth_configmap = true
+
+  # Configure aws-auth roles
   aws_auth_roles = [
     {
       rolearn  = aws_iam_role.eks_admin_role.arn
@@ -35,6 +39,7 @@ module "eks" {
       min_size     = 2
 
       instance_types = ["t2.medium"]
+      capacity_type  = "ON_DEMAND"
     }
   }
 
