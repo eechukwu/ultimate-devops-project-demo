@@ -1,14 +1,5 @@
-# File: .github/workflows/terraform-destroy.yml
-
-############################################################
-# Workflow name that appears in GitHub Actions UI
-############################################################
 name: "Destroy AWS Resources"
 
-############################################################
-# This workflow can only be triggered manually
-# Requires confirmation to prevent accidental destruction
-############################################################
 on:
   workflow_dispatch:
     inputs:
@@ -17,16 +8,10 @@ on:
         required: true
         type: string
 
-############################################################
-# Environment variables used in the workflow
-############################################################
 env:
   AWS_REGION: eu-west-2
   TERRAFORM_DIR: ./terraform
 
-############################################################
-# Permissions needed for AWS authentication
-############################################################
 permissions:
   id-token: write
   contents: read
@@ -35,65 +20,58 @@ jobs:
   destroy:
     name: "Destroy Infrastructure"
     runs-on: ubuntu-latest
-
-    # Only run if confirmation matches exactly
     if: github.event.inputs.confirm_destroy == 'DESTROY'
 
     steps:
-      ############################################################
-      # Step 1: Get the code from the repository
-      ############################################################
+      # Step 1: Check out the repository code
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      ############################################################
-      # Step 2: Set up AWS authentication using OIDC
-      ############################################################
+      # Step 2: Set up AWS credentials using OIDC
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      ############################################################
       # Step 3: Install Terraform on the runner
-      ############################################################
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.5.0"
 
-      ############################################################
-      # Step 4: Initialize Terraform (download providers/modules)
-      ############################################################
+      # Step 4: Initialize Terraform and ensure state access
       - name: Terraform Init
         working-directory: ${{ env.TERRAFORM_DIR }}
-        run: terraform init
+        run: |
+          # Show the current working directory and its contents
+          pwd
+          ls -la
+          
+          # Initialize with detailed logging
+          TF_LOG=DEBUG terraform init
+          
+          # Show current state
+          echo "Current Terraform State:"
+          terraform state list || echo "No state found or cannot access state"
 
-      ############################################################
-      # Step 5: Show what resources will be destroyed
-      ############################################################
-      - name: Terraform Plan Destroy
+      # Step 5: Plan destruction to verify state access
+      - name: Verify Resources to Destroy
         working-directory: ${{ env.TERRAFORM_DIR }}
         run: |
-          echo "🔍 Showing resources that will be destroyed..."
+          echo "Resources targeted for destruction:"
           terraform plan -destroy
+          
+          # Check if any resources are in state
+          RESOURCE_COUNT=$(terraform state list | wc -l)
+          if [ "$RESOURCE_COUNT" -eq "0" ]; then
+            echo "WARNING: No resources found in Terraform state!"
+            echo "Either resources are already destroyed or state is not accessible."
+          fi
 
-      ############################################################
-      # Step 6: Destroy all resources
-      ############################################################
+      # Step 6: Destroy resources
       - name: Terraform Destroy
         working-directory: ${{ env.TERRAFORM_DIR }}
         run: |
-          echo "⚠️ Starting resource destruction..."
+          echo "Beginning destruction..."
           terraform destroy -auto-approve
-
-      ############################################################
-      # Step 7: Confirm destruction status
-      ############################################################
-      - name: Confirm Destruction
-        if: success()
-        run: |
-          echo "✅ All resources have been destroyed"
-          echo "Triggered by: ${{ github.actor }}"
-          echo "Time: $(date)"
