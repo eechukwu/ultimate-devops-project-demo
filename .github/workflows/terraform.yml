@@ -131,6 +131,13 @@ jobs:
             --query "cluster.identity.oidc.issuer" --output text | cut -d '/' -f 5)
           echo "oidc_id=${OIDC_ID}" >> $GITHUB_OUTPUT
 
+      - name: Install eksctl
+        run: |
+          curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz"
+          tar -xzf eksctl_$(uname -s)_amd64.tar.gz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          eksctl version
+
       # Configure the OIDC provider for the EKS cluster
       - name: Configure OIDC Provider
         run: |
