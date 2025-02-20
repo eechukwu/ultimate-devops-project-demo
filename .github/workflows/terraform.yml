@@ -166,6 +166,22 @@ jobs:
             --region ${{ env.AWS_REGION }} \
             --approve
 
+      # Verify AWS Load Balancer Controller Service Account
+      - name: Verify Load Balancer Controller Service Account
+        run: |
+          # Wait for the service account to exist
+          for i in {1..10}; do
+            if kubectl get serviceaccount aws-load-balancer-controller -n kube-system; then
+              echo "Service account found successfully!"
+              exit 0
+            fi
+            echo "Waiting for service account to be created... (attempt $i/10)"
+            sleep 30
+          done
+          
+          echo "Service account was not found after 5 minutes"
+          exit 1
+
       # Add and update the Helm repository
       - name: Add and Update Helm Repo
         run: |
@@ -175,18 +191,7 @@ jobs:
       # Install the AWS Load Balancer Controller using Helm
       - name: Install AWS Load Balancer Controller
         run: |
-          # Add debug information
-          echo "Cluster Name: ${{ needs.terraform.outputs.cluster_name }}"
-          echo "VPC ID: ${{ needs.terraform.outputs.vpc_id }}"
-          echo "Region: ${{ env.AWS_REGION }}"
-
-          # Verify service account exists
-          kubectl get serviceaccount aws-load-balancer-controller -n kube-system
-
-          # Uninstall existing controller if it exists
-          helm uninstall aws-load-balancer-controller -n kube-system || true
-
-          # Install with extended debugging and timeout
+          # Install with extended timeout
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
             --set clusterName=${{ needs.terraform.outputs.cluster_name }} \
@@ -195,14 +200,10 @@ jobs:
             --set region=${{ env.AWS_REGION }} \
             --set vpcId=${{ needs.terraform.outputs.vpc_id }} \
             --wait \
-            --timeout 15m \
-            --debug
-
-          # Detailed verification steps
-          echo "Checking Load Balancer Controller deployment..."
+            --timeout 15m
+      
+          # Verify deployment
           kubectl get deployment aws-load-balancer-controller -n kube-system
-
-          echo "Describing deployment for more details..."
           kubectl describe deployment aws-load-balancer-controller -n kube-system
 
       # Apply the core Kubernetes manifests
