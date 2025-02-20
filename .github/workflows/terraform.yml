@@ -2,7 +2,7 @@ name: "Terraform AWS Deployment"
 
 # Define when this workflow should run
 on:
-  workflow_dispatch:          # Only manual trigger from GitHub UI
+  workflow_dispatch:
     inputs:
       confirm_deploy:
         description: 'Type "DEPLOY" to confirm deployment'
@@ -16,8 +16,8 @@ env:
 
 # Permissions required for GitHub OIDC authentication with AWS
 permissions:
-  id-token: write  # Needed for AWS OIDC authentication, Required for JWT token generation
-  contents: read   # Needed for repository access contents, Required for repository checkout
+  id-token: write  # Needed for AWS OIDC authentication
+  contents: read   # Needed for repository access
 
 # Jobs to be executed in this workflow
 jobs:
@@ -47,7 +47,11 @@ jobs:
       # Step 4: Initialize Terraform working directory
       - name: Terraform Init
         working-directory: ${{ env.TERRAFORM_DIR }}
-        run: terraform init
+        run: |
+          terraform init
+          # Verify state access
+          echo "Checking Terraform state:"
+          terraform state list || echo "No state found"
 
       # Step 5: Create Terraform plan
       - name: Terraform Plan

@@ -40,38 +40,12 @@ jobs:
         with:
           terraform_version: "1.5.0"
 
-      # Step 4: Initialize Terraform and ensure state access
+      # Step 4: Initialize Terraform
       - name: Terraform Init
         working-directory: ${{ env.TERRAFORM_DIR }}
-        run: |
-          # Show the current working directory and its contents
-          pwd
-          ls -la
-          
-          # Initialize with detailed logging
-          TF_LOG=DEBUG terraform init
-          
-          # Show current state
-          echo "Current Terraform State:"
-          terraform state list || echo "No state found or cannot access state"
+        run: terraform init
 
-      # Step 5: Plan destruction to verify state access
-      - name: Verify Resources to Destroy
-        working-directory: ${{ env.TERRAFORM_DIR }}
-        run: |
-          echo "Resources targeted for destruction:"
-          terraform plan -destroy
-          
-          # Check if any resources are in state
-          RESOURCE_COUNT=$(terraform state list | wc -l)
-          if [ "$RESOURCE_COUNT" -eq "0" ]; then
-            echo "WARNING: No resources found in Terraform state!"
-            echo "Either resources are already destroyed or state is not accessible."
-          fi
-
-      # Step 6: Destroy resources
+      # Step 5: Execute Destroy
       - name: Terraform Destroy
         working-directory: ${{ env.TERRAFORM_DIR }}
-        run: |
-          echo "Beginning destruction..."
-          terraform destroy -auto-approve
+        run: terraform destroy -auto-approve
