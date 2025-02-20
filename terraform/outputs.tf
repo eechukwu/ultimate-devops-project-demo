@@ -42,3 +42,15 @@ output "oidc_provider_arn" {
   description = "ARN of the OIDC Provider if `enable_irsa = true`"
   value       = module.eks.oidc_provider_arn
 }
+
+output "eks_admin_role_arn" {
+  value = aws_iam_role.eks_admin_role.arn
+}
+
+output "eks_developer_role_arn" {
+  value = aws_iam_role.eks_developer_role.arn
+}
+
+output "eks_readonly_role_arn" {
+  value = aws_iam_role.eks_readonly_role.arn
+}

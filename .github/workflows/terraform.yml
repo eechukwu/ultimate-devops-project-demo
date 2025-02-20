@@ -78,35 +78,7 @@ jobs:
       - name: Verify EKS Cluster
         run: |
           aws eks describe-cluster --name ${{ steps.tf-output.outputs.cluster_name }} --query 'cluster.status'
-
-      # Add this step after the cluster is verified as ACTIVE
-      - name: Configure aws-auth ConfigMap
-        run: |
-          # Update kubeconfig
-          aws eks update-kubeconfig --name ${{ steps.tf-output.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
           
-          # Create or update aws-auth ConfigMap
-          cat << EOF | kubectl apply -f -
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: aws-auth
-            namespace: kube-system
-          data:
-            mapRoles: |
-              - rolearn: ${aws_iam_role.eks_admin_role.arn}
-                username: eks-admin
-                groups:
-                  - system:masters
-              - rolearn: ${aws_iam_role.eks_developer_role.arn}
-                username: eks-developer
-                groups:
-                  - developer
-              - rolearn: ${aws_iam_role.eks_readonly_role.arn}
-                username: eks-readonly
-                groups:
-                  - readonly
-          EOF
 
       # Wait for EKS Cluster to be Active
       - name: Wait for EKS Cluster to be Active
@@ -205,6 +177,43 @@ jobs:
 
           # Verify the service account
           kubectl get serviceaccount aws-load-balancer-controller -n kube-system
+
+      - name: Configure aws-auth ConfigMap
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: |
+          # Update kubeconfig
+          aws eks update-kubeconfig --name ${{ steps.tf-output.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
+          
+          # Get role ARNs from Terraform
+          ADMIN_ROLE_ARN=$(terraform output -raw eks_admin_role_arn)
+          DEVELOPER_ROLE_ARN=$(terraform output -raw eks_developer_role_arn)
+          READONLY_ROLE_ARN=$(terraform output -raw eks_readonly_role_arn)
+          
+          # Create ConfigMap manifest
+          cat << EOF > aws-auth-configmap.yaml
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: aws-auth
+            namespace: kube-system
+          data:
+            mapRoles: |
+              - rolearn: ${ADMIN_ROLE_ARN}
+                username: eks-admin
+                groups:
+                  - system:masters
+              - rolearn: ${DEVELOPER_ROLE_ARN}
+                username: eks-developer
+                groups:
+                  - developer
+              - rolearn: ${READONLY_ROLE_ARN}
+                username: eks-readonly
+                groups:
+                  - readonly
+          EOF
+          
+          # Apply the ConfigMap
+          kubectl apply -f aws-auth-configmap.yaml
 
       # Add and update the Helm repository
       - name: Add and Update Helm Repo
