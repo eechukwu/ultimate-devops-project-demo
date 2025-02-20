@@ -23,6 +23,11 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event.inputs.confirm_deploy == 'DEPLOY'
 
+    # Add this outputs block
+    outputs:
+      cluster_name: ${{ steps.tf-output.outputs.cluster_name }}
+      vpc_id: ${{ steps.tf-output.outputs.vpc_id }}
+
     steps:
       # Check out the repository code
       - name: Checkout Repository
