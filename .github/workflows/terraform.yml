@@ -225,3 +225,41 @@ jobs:
           
           echo "Current cluster state:"
           kubectl get pods,services,ingress -A
+
+update-auth:
+  name: "Update EKS Auth"
+  needs: kubernetes
+  runs-on: ubuntu-latest
+
+  steps:
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: eu-west-2
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --name ex-terraform --region eu-west-2
+
+    - name: Update aws-auth ConfigMap
+      run: |
+        cat << EOF | kubectl apply -f -
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: aws-auth
+          namespace: kube-system
+        data:
+          mapRoles: |
+            - rolearn: arn:aws:iam::354852339163:role/ex-terraform-cluster-20250220200055865500000001
+              username: system:node:{{EC2PrivateDNSName}}
+              groups:
+                - system:bootstrappers
+                - system:nodes
+          mapUsers: |
+            - userarn: arn:aws:iam::354852339163:user/EChukwuDevopsLab
+              username: admin
+              groups:
+                - system:masters
+        EOF
