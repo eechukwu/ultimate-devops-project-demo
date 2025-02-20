@@ -1,0 +1,110 @@
+# File: .github/workflows/terraform.yml
+
+#####################################################
+# Workflow name as it will appear in GitHub Actions UI
+#####################################################
+name: "Terraform Deployment"
+
+############################################################
+# Define when this workflow should run
+# - On push to main branch (only terraform directory changes)
+# - On pull requests to main (only terraform directory changes)
+# - Manually via GitHub Actions UI
+############################################################
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'terraform/**'         # Trigger on any changes in terraform directory
+      - '.github/workflows/**' # Also trigger on workflow file changes
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'terraform/**'         # Same path filters for pull requests
+      - '.github/workflows/**'
+  workflow_dispatch:          # Allows manual trigger from GitHub UI
+
+############################################################
+# Global environment variables used throughout the workflow
+# - AWS_REGION: Region where resources will be created
+# - TERRAFORM_DIR: Directory containing Terraform configurations
+############################################################
+env:
+  AWS_REGION: eu-west-2       # AWS region for resource deployment
+  TERRAFORM_DIR: ./terraform  # Location of Terraform files
+
+############################################################
+# Permissions required for GitHub OIDC authentication with AWS
+# - id-token: write -> Required for JWT token generation
+# - contents: read -> Required for repository checkout
+############################################################
+permissions:
+  id-token: write  # Needed for AWS OIDC authentication
+  contents: read   # Needed for repository access
+
+############################################################
+# Jobs to be executed in this workflow
+############################################################
+jobs:
+  terraform:
+    name: "Terraform"
+    runs-on: ubuntu-latest    # Use latest Ubuntu runner
+
+    steps:
+      ############################################################
+      # Step 1: Check out the repository code
+      # This step clones your repository to the GitHub runner
+      ############################################################
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      ############################################################
+      # Step 2: Set up AWS credentials using OIDC
+      # This step authenticates with AWS using the OIDC provider
+      # No long-term credentials are stored in GitHub
+      ############################################################
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}  # IAM role to assume
+          aws-region: ${{ env.AWS_REGION }}           # AWS region from env vars
+
+      ############################################################
+      # Step 3: Install Terraform on the runner
+      # Sets up specific version of Terraform to ensure consistency
+      ############################################################
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.5.0"  # Specify Terraform version
+
+      ############################################################
+      # Step 4: Initialize Terraform working directory
+      # Downloads providers and modules
+      # Sets up backend for state management
+      ############################################################
+      - name: Terraform Init
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform init
+
+      ############################################################
+      # Step 5: Create Terraform plan
+      # Shows what changes will be made to infrastructure
+      # Saves plan to file for apply step
+      ############################################################
+      - name: Terraform Plan
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform plan -out=tfplan
+
+      ############################################################
+      # Step 6: Apply Terraform changes
+      # Only runs on main branch (not on pull requests)
+      # Uses the plan created in previous step
+      ############################################################
+      - name: Terraform Apply
+        # Only apply changes when:
+        # 1. We're on the main branch
+        # 2. This is not a pull request
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform apply -auto-approve tfplan
