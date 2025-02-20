@@ -1,6 +1,5 @@
-name: "Terraform AWS Deployment"
+name: "Terraform AWS Deployment and Application Deployment"
 
-# Define when this workflow should run
 on:
   workflow_dispatch:
     inputs:
@@ -9,56 +8,191 @@ on:
         required: true
         type: string
 
-# Global environment variables used throughout the workflow
 env:
-  AWS_REGION: eu-west-2       # AWS region for resource deployment
-  TERRAFORM_DIR: ./terraform  # Location of Terraform files
+  AWS_REGION: eu-west-2
+  TERRAFORM_DIR: ./terraform
+  K8S_DIR: ./kubernetes
 
-# Permissions required for GitHub OIDC authentication with AWS
 permissions:
-  id-token: write  # Needed for AWS OIDC authentication
-  contents: read   # Needed for repository access
+  id-token: write
+  contents: read
 
-# Jobs to be executed in this workflow
 jobs:
   terraform:
     name: "Terraform"
-    runs-on: ubuntu-latest    # Use latest Ubuntu runner
+    runs-on: ubuntu-latest
     if: github.event.inputs.confirm_deploy == 'DEPLOY'
 
     steps:
-      # Step 1: Check out the repository code
+      # Check out the repository code
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # Step 2: Set up AWS credentials using OIDC
+      # Set up AWS credentials using OIDC
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}  # IAM role to assume
-          aws-region: ${{ env.AWS_REGION }}           # AWS region from env vars
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      # Step 3: Install Terraform on the runner
+      # Install Terraform on the runner
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.5.0"  # Specify Terraform version
+          terraform_version: "1.5.0"
 
-      # Step 4: Initialize Terraform working directory
+      # Initialize Terraform working directory
       - name: Terraform Init
         working-directory: ${{ env.TERRAFORM_DIR }}
         run: |
           terraform init
-          # Verify state access
           echo "Checking Terraform state:"
           terraform state list || echo "No state found"
 
-      # Step 5: Create Terraform plan
+      # Create Terraform plan
       - name: Terraform Plan
         working-directory: ${{ env.TERRAFORM_DIR }}
         run: terraform plan -out=tfplan
 
-      # Step 6: Apply Terraform changes
+      # Apply Terraform changes
       - name: Terraform Apply
         working-directory: ${{ env.TERRAFORM_DIR }}
         run: terraform apply -auto-approve tfplan
+
+      # Retrieve Terraform outputs (VPC ID and cluster name)
+      - name: Get Terraform Outputs
+        id: tf-output
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: |
+          VPC_ID=$(terraform output -raw vpc_id)
+          CLUSTER_NAME=$(terraform output -raw cluster_name)
+          echo "vpc_id=${VPC_ID}" >> $GITHUB_OUTPUT
+          echo "cluster_name=${CLUSTER_NAME}" >> $GITHUB_OUTPUT
+
+      # Verify EKS Cluster status
+      - name: Verify EKS Cluster
+        run: |
+          aws eks describe-cluster --name ${{ steps.tf-output.outputs.cluster_name }} --query 'cluster.status'
+
+      # Wait for EKS Cluster to be Active
+      - name: Wait for EKS Cluster to be Active
+        run: |
+          while [[ $(aws eks describe-cluster --name ${{ steps.tf-output.outputs.cluster_name }} --query 'cluster.status' --output text) != "ACTIVE" ]]; do
+            echo "Waiting for EKS cluster to be active..."
+            sleep 30
+          done
+
+  kubernetes:
+    name: Kubernetes Deployment
+    needs: terraform
+    runs-on: ubuntu-latest
+
+    env:
+      EKS_CLUSTER_NAME: ${{ needs.terraform.outputs.cluster_name }}
+
+    steps:
+      # Check out the repository code
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # Set up AWS credentials using OIDC
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Update kubeconfig to connect to the EKS cluster
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ needs.terraform.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
+
+      # Install kubectl on the runner
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      # Install Helm on the runner
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
+
+      # Retrieve the OIDC ID for the EKS cluster
+      - name: Get OIDC ID
+        id: oidc
+        run: |
+          OIDC_ID=$(aws eks describe-cluster --name ${{ needs.terraform.outputs.cluster_name }} \
+            --query "cluster.identity.oidc.issuer" --output text | cut -d '/' -f 5)
+          echo "oidc_id=${OIDC_ID}" >> $GITHUB_OUTPUT
+
+      # Configure the OIDC provider for the EKS cluster
+      - name: Configure OIDC Provider
+        run: |
+          eksctl utils associate-iam-oidc-provider \
+            --cluster ${{ needs.terraform.outputs.cluster_name }} \
+            --region ${{ env.AWS_REGION }} \
+            --approve
+
+      # Create an IAM policy for the AWS Load Balancer Controller
+      - name: Create IAM Policy for Load Balancer Controller
+        run: |
+          curl -O https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.11.0/docs/install/iam_policy.json
+          aws iam create-policy \
+            --policy-name AWSLoadBalancerControllerIAMPolicy \
+            --policy-document file://iam_policy.json || true
+
+      # Create a service account for the AWS Load Balancer Controller
+      - name: Create Service Account for Load Balancer Controller
+        run: |
+          eksctl create iamserviceaccount \
+            --cluster=${{ needs.terraform.outputs.cluster_name }} \
+            --namespace=kube-system \
+            --name=aws-load-balancer-controller \
+            --role-name AmazonEKSLoadBalancerControllerRole \
+            --attach-policy-arn=arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/AWSLoadBalancerControllerIAMPolicy \
+            --region ${{ env.AWS_REGION }} \
+            --approve
+
+      # Add and update the Helm repository
+      - name: Add and Update Helm Repo
+        run: |
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update eks
+
+      # Install the AWS Load Balancer Controller using Helm
+      - name: Install AWS Load Balancer Controller
+        run: |
+          helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName=${{ needs.terraform.outputs.cluster_name }} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region=${{ env.AWS_REGION }} \
+            --set vpcId=${{ needs.terraform.outputs.vpc_id }} \
+            --wait
+
+      # Apply the core Kubernetes manifests
+      - name: Apply Core Kubernetes Manifests
+        working-directory: ${{ env.K8S_DIR }}
+        run: |
+          kubectl apply -f serviceaccount.yaml
+          kubectl apply -f complete-deploy.yaml
+
+      # Deploy the ingress configuration
+      - name: Deploy Ingress Configuration
+        working-directory: ${{ env.K8S_DIR }}/frontendproxy
+        run: |
+          echo "Deploying ingress configuration..."
+          kubectl apply -f ingress.yaml
+          echo "Waiting for ingress to be ready..."
+          kubectl wait --for=condition=ready ingress --all --timeout=300s || true
+
+      # Verify the deployments
+      - name: Verify Deployments
+        run: |
+          echo "Verifying Load Balancer Controller..."
+          kubectl wait --for=condition=available --timeout=300s deployment -l app.kubernetes.io/name=aws-load-balancer-controller -n kube-system
+          
+          echo "Current cluster state:"
+          kubectl get pods,services,ingress -A
