@@ -87,7 +87,7 @@ jobs:
             echo "Waiting for EKS cluster to be active..."
             sleep 30
           done
-      # In the terraform job, after the "Wait for EKS Cluster to be Active" step
+
       - name: Configure aws-auth ConfigMap
         working-directory: ${{ env.TERRAFORM_DIR }}
         run: |
@@ -95,7 +95,7 @@ jobs:
           aws eks update-kubeconfig --name ${{ steps.tf-output.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
           
           # Create ConfigMap manifest
-          cat << 'EOF' > aws-auth-configmap.yaml
+          cat << EOF > aws-auth-configmap.yaml
           apiVersion: v1
           kind: ConfigMap
           metadata:
@@ -103,24 +103,22 @@ jobs:
             namespace: kube-system
           data:
             mapRoles: |
-              - rolearn: $(terraform output -raw eks_admin_role_arn)
-                username: eks-admin
+              - rolearn: ${NODE_INSTANCE_ROLE}
+                username: system:node:{{EC2PrivateDNSName}}
                 groups:
+                  - system:bootstrappers
+                  - system:nodes
+              - rolearn: $(terraform output -raw eks_admin_role_arn)
+                groups:
+                  - eks-admins
                   - system:masters
               - rolearn: $(terraform output -raw eks_developer_role_arn)
-                username: eks-developer
                 groups:
-                  - developer
+                  - eks-developers
               - rolearn: $(terraform output -raw eks_readonly_role_arn)
-                username: eks-readonly
                 groups:
-                  - readonly
+                  - eks-readonly
           EOF
-          
-          # Insert the actual values
-          sed -i "s|\$(terraform output -raw eks_admin_role_arn)|$(terraform output -raw eks_admin_role_arn)|g" aws-auth-configmap.yaml
-          sed -i "s|\$(terraform output -raw eks_developer_role_arn)|$(terraform output -raw eks_developer_role_arn)|g" aws-auth-configmap.yaml
-          sed -i "s|\$(terraform output -raw eks_readonly_role_arn)|$(terraform output -raw eks_readonly_role_arn)|g" aws-auth-configmap.yaml
           
           # Apply the ConfigMap
           kubectl apply -f aws-auth-configmap.yaml
