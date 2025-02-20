@@ -182,7 +182,7 @@ jobs:
         working-directory: ${{ env.TERRAFORM_DIR }}
         run: |
           # Update kubeconfig
-          aws eks update-kubeconfig --name ${{ steps.tf-output.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
+          aws eks update-kubeconfig --name ${{ needs.terraform.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
           
           # Get role ARNs from Terraform
           ADMIN_ROLE_ARN=$(terraform output -raw eks_admin_role_arn)
