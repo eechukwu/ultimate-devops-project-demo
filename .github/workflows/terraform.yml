@@ -79,6 +79,35 @@ jobs:
         run: |
           aws eks describe-cluster --name ${{ steps.tf-output.outputs.cluster_name }} --query 'cluster.status'
 
+      # Add this step after the cluster is verified as ACTIVE
+      - name: Configure aws-auth ConfigMap
+        run: |
+          # Update kubeconfig
+          aws eks update-kubeconfig --name ${{ steps.tf-output.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
+          
+          # Create or update aws-auth ConfigMap
+          cat << EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: aws-auth
+            namespace: kube-system
+          data:
+            mapRoles: |
+              - rolearn: ${aws_iam_role.eks_admin_role.arn}
+                username: eks-admin
+                groups:
+                  - system:masters
+              - rolearn: ${aws_iam_role.eks_developer_role.arn}
+                username: eks-developer
+                groups:
+                  - developer
+              - rolearn: ${aws_iam_role.eks_readonly_role.arn}
+                username: eks-readonly
+                groups:
+                  - readonly
+          EOF
+
       # Wait for EKS Cluster to be Active
       - name: Wait for EKS Cluster to be Active
         run: |
