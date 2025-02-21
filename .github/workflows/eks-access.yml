@@ -32,26 +32,62 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Add Terraform setup step
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      # Initialize Terraform
       - name: Terraform Init
         working-directory: ${{ env.TERRAFORM_DIR }}
         run: |
+          # Remove any existing state
+          rm -rf .terraform
+          rm -f .terraform.lock.hcl
+          
+          # Initialize with backend config
           terraform init
+          
+          # Show current state
+          echo "Current Terraform state:"
+          terraform show || echo "No state found"
 
-      # Install kubectl
-      - name: Install kubectl
+      - name: Download Terraform State
+        working-directory: ${{ env.TERRAFORM_DIR }}
         run: |
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-          kubectl version --client
+          terraform state pull || echo "No remote state found"
+          
+          # List available outputs
+          echo "Available Terraform outputs:"
+          terraform output || echo "No outputs found"
 
-      # Configure kubectl
+      # Fallback to getting role ARNs from cluster
+      - name: Get Role ARNs from Cluster
+        run: |
+          # Get node role from cluster
+          NODE_ROLE=$(aws eks describe-nodegroup \
+            --cluster-name ${{ inputs.cluster_name }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'nodegroups[0].nodeRole' \
+            --output text)
+          
+          echo "NODE_ROLE=${NODE_ROLE}" >> $GITHUB_ENV
+          
+          # Get IAM roles based on naming convention
+          ADMIN_ROLE=$(aws iam list-roles --query "Roles[?contains(RoleName, 'eks-admin')].Arn" --output text)
+          DEV_ROLE=$(aws iam list-roles --query "Roles[?contains(RoleName, 'eks-developer')].Arn" --output text)
+          READONLY_ROLE=$(aws iam list-roles --query "Roles[?contains(RoleName, 'eks-readonly')].Arn" --output text)
+          
+          echo "ADMIN_ROLE=${ADMIN_ROLE}" >> $GITHUB_ENV
+          echo "DEV_ROLE=${DEV_ROLE}" >> $GITHUB_ENV
+          echo "READONLY_ROLE=${READONLY_ROLE}" >> $GITHUB_ENV
+          
+          # Print roles for verification
+          echo "Found roles:"
+          echo "Node Role: ${NODE_ROLE}"
+          echo "Admin Role: ${ADMIN_ROLE}"
+          echo "Dev Role: ${DEV_ROLE}"
+          echo "Readonly Role: ${READONLY_ROLE}"
+
       - name: Configure kubectl
         run: |
           aws eks update-kubeconfig \
@@ -61,26 +97,18 @@ jobs:
           # Verify connection
           kubectl get svc
 
-      - name: Verify Terraform Outputs
-        id: terraform-outputs
-        working-directory: ${{ env.TERRAFORM_DIR }}
-        run: |
-          NODE_ROLE=$(terraform output -raw node_instance_role_arn)
-          ADMIN_ROLE=$(terraform output -raw eks_admin_role_arn)
-          DEV_ROLE=$(terraform output -raw eks_developer_role_arn)
-          READONLY_ROLE=$(terraform output -raw eks_readonly_role_arn)
-          
-          echo "NODE_ROLE=${NODE_ROLE}" >> $GITHUB_ENV
-          echo "ADMIN_ROLE=${ADMIN_ROLE}" >> $GITHUB_ENV
-          echo "DEV_ROLE=${DEV_ROLE}" >> $GITHUB_ENV
-          echo "READONLY_ROLE=${READONLY_ROLE}" >> $GITHUB_ENV
-
       - name: Apply aws-auth ConfigMap
         run: |
+          # Create ConfigMap with found roles
           cat aws-auth/configmap.yaml | \
           sed "s|\${NODE_ROLE}|${NODE_ROLE}|g" | \
           sed "s|\${ADMIN_ROLE}|${ADMIN_ROLE}|g" | \
           sed "s|\${DEV_ROLE}|${DEV_ROLE}|g" | \
           sed "s|\${READONLY_ROLE}|${READONLY_ROLE}|g" > aws-auth-new.yaml
           
+          # Print ConfigMap for verification
+          echo "Generated aws-auth ConfigMap:"
+          cat aws-auth-new.yaml
+          
+          # Apply ConfigMap
           kubectl apply -f aws-auth-new.yaml
