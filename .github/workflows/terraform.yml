@@ -91,10 +91,22 @@ jobs:
       - name: Configure aws-auth ConfigMap
         working-directory: ${{ env.TERRAFORM_DIR }}
         run: |
+          # First verify we can get all the required outputs
+          echo "Verifying Terraform outputs..."
+          NODE_ROLE=$(terraform output -raw node_instance_role_arn)
+          ADMIN_ROLE=$(terraform output -raw eks_admin_role_arn)
+          DEV_ROLE=$(terraform output -raw eks_developer_role_arn)
+          READONLY_ROLE=$(terraform output -raw eks_readonly_role_arn)
+          
+          echo "Node Role: $NODE_ROLE"
+          echo "Admin Role: $ADMIN_ROLE"
+          echo "Developer Role: $DEV_ROLE"
+          echo "Readonly Role: $READONLY_ROLE"
+          
           # Update kubeconfig
           aws eks update-kubeconfig --name ${{ steps.tf-output.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
           
-          # Create ConfigMap manifest
+          # Create ConfigMap manifest with verification
           cat << EOF > aws-auth-configmap.yaml
           apiVersion: v1
           kind: ConfigMap
@@ -103,26 +115,36 @@ jobs:
             namespace: kube-system
           data:
             mapRoles: |
-              - rolearn: ${NODE_INSTANCE_ROLE}
+              - rolearn: ${NODE_ROLE}
                 username: system:node:{{EC2PrivateDNSName}}
                 groups:
                   - system:bootstrappers
                   - system:nodes
-              - rolearn: $(terraform output -raw eks_admin_role_arn)
+              - rolearn: ${ADMIN_ROLE}
+                username: admin-user
                 groups:
-                  - eks-admins
                   - system:masters
-              - rolearn: $(terraform output -raw eks_developer_role_arn)
+                  - eks-admins
+              - rolearn: ${DEV_ROLE}
+                username: developer-user
                 groups:
                   - eks-developers
-              - rolearn: $(terraform output -raw eks_readonly_role_arn)
+              - rolearn: ${READONLY_ROLE}
+                username: readonly-user
                 groups:
                   - eks-readonly
           EOF
           
+          # Verify the ConfigMap content before applying
+          echo "Verifying ConfigMap content:"
+          cat aws-auth-configmap.yaml
+          
           # Apply the ConfigMap
           kubectl apply -f aws-auth-configmap.yaml
-      
+          
+          # Verify the application
+          echo "Verifying applied ConfigMap:"
+          kubectl get configmap aws-auth -n kube-system -o yaml
 
   kubernetes:
     name: Kubernetes Deployment
