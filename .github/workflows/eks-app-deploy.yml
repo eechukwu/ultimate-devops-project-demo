@@ -31,12 +31,10 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install Tools
+      - name: Install kubectl
         run: |
-          # Install kubectl
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-          kubectl version --client
+          sudo apt-get update
+          sudo apt-get install -y kubectl
 
       - name: Configure kubectl
         run: |
