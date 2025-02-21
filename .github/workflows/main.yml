@@ -31,7 +31,7 @@ jobs:
     secrets: inherit
 
   application:
-    needs: [access-management, loadbalancer]
+    needs: [infrastructure, access-management, loadbalancer]
     uses: ./.github/workflows/eks-app-deploy.yml
     with:
       cluster_name: ${{ needs.infrastructure.outputs.cluster_name }}
