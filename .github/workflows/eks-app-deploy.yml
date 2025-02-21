@@ -21,7 +21,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -43,22 +44,30 @@ jobs:
             --region "${{ env.AWS_REGION }}"
 
       - name: Deploy Application
+        id: deploy
         run: |
+          set -e
+          
           echo "Deploying application components..."
           
-          echo "Applying service account..."
-          kubectl apply -f ${{ env.K8S_DIR }}/serviceaccount.yaml
+          for manifest in serviceaccount.yaml complete-deploy.yaml frontendproxy/ingress.yaml; do
+            if [ ! -f "${{ env.K8S_DIR }}/$manifest" ]; then
+              echo "Warning: Manifest file $manifest not found. Skipping..."
+              continue
+            fi
           
-          echo "Applying main deployment..."
-          kubectl apply -f ${{ env.K8S_DIR }}/complete-deploy.yaml
-          
-          echo "Applying ingress..."
-          kubectl apply -f ${{ env.K8S_DIR }}/frontendproxy/ingress.yaml
+            echo "Applying $manifest..."
+            kubectl apply -f "${{ env.K8S_DIR }}/$manifest" || {
+              echo "Failed to apply $manifest"
+              exit 1
+            }
+          done
           
           echo "Waiting for deployments to be ready..."
           kubectl wait --for=condition=available deployment --all --timeout=300s
 
       - name: Verify Deployment
+        if: success() || steps.deploy.outcome == 'failure'
         run: |
           echo "Deployment Status:"
           kubectl get deployments -A
@@ -71,3 +80,9 @@ jobs:
           
           echo "Ingress Status:"
           kubectl get ingress -A
+
+      - name: Notify Deployment Failure
+        if: failure()
+        run: |
+          echo "Deployment to ${{ inputs.cluster_name }} failed"
+          exit 1
