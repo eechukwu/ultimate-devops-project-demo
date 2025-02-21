@@ -7,6 +7,10 @@ on:
         required: true
         type: string
 
+permissions:
+  id-token: write
+  contents: read
+
 env:
   AWS_REGION: eu-west-2
   TERRAFORM_DIR: ./terraform
@@ -15,7 +19,6 @@ env:
 jobs:
   configure-access:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
 
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +44,7 @@ jobs:
           ADMIN_ROLE=$(terraform output -raw eks_admin_role_arn)
           DEV_ROLE=$(terraform output -raw eks_developer_role_arn)
           READONLY_ROLE=$(terraform output -raw eks_readonly_role_arn)
-
+          
           echo "NODE_ROLE=${NODE_ROLE}" >> $GITHUB_ENV
           echo "ADMIN_ROLE=${ADMIN_ROLE}" >> $GITHUB_ENV
           echo "DEV_ROLE=${DEV_ROLE}" >> $GITHUB_ENV
@@ -50,12 +53,11 @@ jobs:
       - name: Apply aws-auth ConfigMap
         run: |
           aws eks update-kubeconfig --name ${{ inputs.cluster_name }} --region ${{ env.AWS_REGION }}
-
+          
           cat aws-auth/configmap.yaml | \
           sed "s|\${NODE_ROLE}|${NODE_ROLE}|g" | \
           sed "s|\${ADMIN_ROLE}|${ADMIN_ROLE}|g" | \
           sed "s|\${DEV_ROLE}|${DEV_ROLE}|g" | \
-          sed "s|\${READONLY_ROLE}|${READONLY_ROLE}|g" | \
-          sed "s|\${ENVIRONMENT}|${{ inputs.environment }}|g" > aws-auth-new.yaml
-
+          sed "s|\${READONLY_ROLE}|${READONLY_ROLE}|g" > aws-auth-new.yaml
+          
           kubectl apply -f aws-auth-new.yaml

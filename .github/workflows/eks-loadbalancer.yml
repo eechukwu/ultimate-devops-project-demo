@@ -10,6 +10,10 @@ on:
         required: true
         type: string
 
+permissions:
+  id-token: write
+  contents: read
+
 env:
   AWS_REGION: eu-west-2
   HELM_VERSION: "3.12.3"
@@ -19,7 +23,6 @@ env:
 jobs:
   setup-loadbalancer:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
 
     steps:
       - uses: actions/checkout@v4
@@ -54,15 +57,15 @@ jobs:
           curl -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.11.0/docs/install/iam_policy.json
           
           aws iam create-policy \
-            --policy-name AWSLoadBalancerControllerIAMPolicy-${{ inputs.environment }} \
+            --policy-name AWSLoadBalancerControllerIAMPolicy \
             --policy-document file://iam_policy.json || true
 
           eksctl create iamserviceaccount \
             --cluster=${{ inputs.cluster_name }} \
             --namespace=kube-system \
             --name=aws-load-balancer-controller \
-            --role-name AmazonEKSLoadBalancerControllerRole-${{ inputs.environment }} \
-            --attach-policy-arn=arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/AWSLoadBalancerControllerIAMPolicy-${{ inputs.environment }} \
+            --role-name AmazonEKSLoadBalancerControllerRole \
+            --attach-policy-arn=arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/AWSLoadBalancerControllerIAMPolicy \
             --region ${{ env.AWS_REGION }} \
             --override-existing-serviceaccounts \
             --approve
