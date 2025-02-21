@@ -1,0 +1,77 @@
+name: "EKS Infrastructure Deployment"
+
+on:
+  workflow_call:
+    inputs:
+      confirm_deploy:
+        description: 'Type "DEPLOY" to confirm deployment'
+        required: true
+        type: string
+    outputs:
+      cluster_name:
+        description: "EKS Cluster Name"
+        value: ${{ jobs.terraform.outputs.cluster_name }}
+      vpc_id:
+        description: "VPC ID"
+        value: ${{ jobs.terraform.outputs.vpc_id }}
+
+env:
+  AWS_REGION: eu-west-2
+  TERRAFORM_DIR: ./terraform
+  TF_VERSION: "1.5.0"
+  MAX_RETRIES: 3
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform:
+    name: "Terraform"
+    runs-on: ubuntu-latest
+    if: inputs.confirm_deploy == 'DEPLOY'
+    environment: ${{ inputs.environment }}
+    outputs:
+      cluster_name: ${{ steps.tf-output.outputs.cluster_name }}
+      vpc_id: ${{ steps.tf-output.outputs.vpc_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: |
+          rm -rf .terraform
+          terraform init
+          terraform state list || echo "No state found"
+
+      - name: Terraform Plan
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get Terraform Outputs
+        id: tf-output
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: |
+          VPC_ID=$(terraform output -raw vpc_id)
+          CLUSTER_NAME=$(terraform output -raw cluster_name)
+          echo "vpc_id=${VPC_ID}" >> $GITHUB_OUTPUT
+          echo "cluster_name=${CLUSTER_NAME}" >> $GITHUB_OUTPUT

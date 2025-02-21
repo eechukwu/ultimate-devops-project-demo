@@ -1,0 +1,61 @@
+name: "EKS Access Management"
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        required: true
+        type: string
+
+env:
+  AWS_REGION: eu-west-2
+  TERRAFORM_DIR: ./terraform
+  MAX_RETRIES: 3
+
+jobs:
+  configure-access:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: "1.27.1"
+
+      - name: Verify Terraform Outputs
+        id: terraform-outputs
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: |
+          NODE_ROLE=$(terraform output -raw node_instance_role_arn)
+          ADMIN_ROLE=$(terraform output -raw eks_admin_role_arn)
+          DEV_ROLE=$(terraform output -raw eks_developer_role_arn)
+          READONLY_ROLE=$(terraform output -raw eks_readonly_role_arn)
+
+          echo "NODE_ROLE=${NODE_ROLE}" >> $GITHUB_ENV
+          echo "ADMIN_ROLE=${ADMIN_ROLE}" >> $GITHUB_ENV
+          echo "DEV_ROLE=${DEV_ROLE}" >> $GITHUB_ENV
+          echo "READONLY_ROLE=${READONLY_ROLE}" >> $GITHUB_ENV
+
+      - name: Apply aws-auth ConfigMap
+        run: |
+          aws eks update-kubeconfig --name ${{ inputs.cluster_name }} --region ${{ env.AWS_REGION }}
+
+          cat aws-auth/configmap.yaml | \
+          sed "s|\${NODE_ROLE}|${NODE_ROLE}|g" | \
+          sed "s|\${ADMIN_ROLE}|${ADMIN_ROLE}|g" | \
+          sed "s|\${DEV_ROLE}|${DEV_ROLE}|g" | \
+          sed "s|\${READONLY_ROLE}|${READONLY_ROLE}|g" | \
+          sed "s|\${ENVIRONMENT}|${{ inputs.environment }}|g" > aws-auth-new.yaml
+
+          kubectl apply -f aws-auth-new.yaml

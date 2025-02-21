@@ -1,0 +1,38 @@
+name: "Main EKS Deployment"
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_deploy:
+        description: 'Type "DEPLOY" to confirm deployment'
+        required: true
+        type: string
+
+jobs:
+  infrastructure:
+    uses: ./.github/workflows/eks-terraform.yml
+    with:
+      confirm_deploy: ${{ github.event.inputs.confirm_deploy }}
+    secrets: inherit
+
+  access-management:
+    needs: infrastructure
+    uses: ./.github/workflows/eks-access.yml
+    with:
+      cluster_name: ${{ needs.infrastructure.outputs.cluster_name }}
+    secrets: inherit
+
+  loadbalancer:
+    needs: infrastructure
+    uses: ./.github/workflows/eks-loadbalancer.yml
+    with:
+      cluster_name: ${{ needs.infrastructure.outputs.cluster_name }}
+      vpc_id: ${{ needs.infrastructure.outputs.vpc_id }}
+    secrets: inherit
+
+  application:
+    needs: [access-management, loadbalancer]
+    uses: ./.github/workflows/eks-app-deploy.yml
+    with:
+      cluster_name: ${{ needs.infrastructure.outputs.cluster_name }}
+    secrets: inherit
