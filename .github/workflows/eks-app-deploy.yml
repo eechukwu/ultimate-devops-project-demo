@@ -31,36 +31,17 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install and Configure kubectl
+      - name: Install Tools
         run: |
-          # Get stable kubectl version
-          KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
-          echo "Installing kubectl version: ${KUBECTL_VERSION}"
-          
-          # Download kubectl
-          curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
-          
-          # Verify download
-          if [ ! -f kubectl ]; then
-            echo "Failed to download kubectl"
-            exit 1
-          fi
-          
           # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-          
-          # Verify installation
-          if ! command -v kubectl &> /dev/null; then
-            echo "kubectl not installed correctly"
-            exit 1
-          fi
-          
-          # Configure kubectl for EKS
-          echo "Configuring kubectl for cluster: ${{ inputs.cluster_name }}"
+          kubectl version --client
+
+      - name: Configure kubectl
+        run: |
           aws eks update-kubeconfig --name ${{ inputs.cluster_name }} --region ${{ env.AWS_REGION }}
-          
-          # Verify cluster access
-          kubectl cluster-info
+          kubectl get svc
 
       - name: Deploy Application
         run: |
