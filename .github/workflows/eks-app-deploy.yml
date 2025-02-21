@@ -38,11 +38,18 @@ jobs:
 
       - name: Configure kubectl
         run: |
+          aws eks update-kubeconfig \
+            --name ${{ inputs.cluster_name }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: |
           # Print cluster name for verification
           echo "Configuring kubectl for cluster: ${{ inputs.cluster_name }}"
           
           # Configure kubectl in a single line
           aws eks update-kubeconfig --name "${{ inputs.cluster_name }}" --region "${{ env.AWS_REGION }}"
+          
           
           # Verify configuration
           kubectl get svc
