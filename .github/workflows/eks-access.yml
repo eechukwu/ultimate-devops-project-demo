@@ -31,6 +31,8 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions
+          role-chaining: true
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -87,8 +89,7 @@ jobs:
           
           aws eks update-kubeconfig \
             --name ${{ inputs.cluster_name }} \
-            --region ${{ env.AWS_REGION }} \
-            --role-arn ${{ secrets.AWS_ROLE_ARN }}
+            --region ${{ env.AWS_REGION }} 
           
           kubectl get svc
 
