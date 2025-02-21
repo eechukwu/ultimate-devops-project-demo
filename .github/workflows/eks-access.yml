@@ -31,10 +31,22 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: "1.27.1"
+      # Install kubectl directly instead of using the action
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      # Configure kubectl for EKS before running other commands
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ inputs.cluster_name }} \
+            --region ${{ env.AWS_REGION }}
+          
+          # Verify connection
+          kubectl get svc
 
       - name: Verify Terraform Outputs
         id: terraform-outputs
@@ -52,8 +64,6 @@ jobs:
 
       - name: Apply aws-auth ConfigMap
         run: |
-          aws eks update-kubeconfig --name ${{ inputs.cluster_name }} --region ${{ env.AWS_REGION }}
-          
           cat aws-auth/configmap.yaml | \
           sed "s|\${NODE_ROLE}|${NODE_ROLE}|g" | \
           sed "s|\${ADMIN_ROLE}|${ADMIN_ROLE}|g" | \
