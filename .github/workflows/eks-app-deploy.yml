@@ -14,7 +14,6 @@ permissions:
 env:
   AWS_REGION: eu-west-2
   K8S_DIR: ./kubernetes
-  KUBECTL_VERSION: "1.27.1"
   MAX_RETRIES: 3
 
 jobs:
@@ -32,14 +31,54 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: ${{ env.KUBECTL_VERSION }}
+      - name: Install kubectl
+        run: |
+          # Download latest stable kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          
+          # Install kubectl
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          
+          # Verify installation
+          kubectl version --client
+          
+          # Configure kubectl for EKS
+          aws eks update-kubeconfig \
+            --name ${{ inputs.cluster_name }} \
+            --region ${{ env.AWS_REGION }}
+          
+          # Verify cluster connection
+          kubectl get svc
 
       - name: Deploy Application
         run: |
-          aws eks update-kubeconfig --name ${{ inputs.cluster_name }} --region ${{ env.AWS_REGION }}
+          # Verify manifests exist
+          echo "Checking manifest files..."
+          ls -la ${{ env.K8S_DIR }}
+          
+          # Apply service account
+          echo "Applying service account..."
           kubectl apply -f ${{ env.K8S_DIR }}/serviceaccount.yaml
+          
+          # Apply main deployment
+          echo "Applying main deployment..."
           kubectl apply -f ${{ env.K8S_DIR }}/complete-deploy.yaml
+          
+          # Apply ingress
+          echo "Applying ingress..."
           kubectl apply -f ${{ env.K8S_DIR }}/frontendproxy/ingress.yaml
+          
+          # Wait for deployments
+          echo "Waiting for deployments to be ready..."
+          kubectl wait --for=condition=available deployment --all --timeout=300s
+
+      - name: Verify Deployment
+        run: |
+          echo "Checking pod status..."
+          kubectl get pods -A
+          
+          echo "Checking service status..."
+          kubectl get services -A
+          
+          echo "Checking ingress status..."
+          kubectl get ingress -A
