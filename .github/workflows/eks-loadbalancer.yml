@@ -24,18 +24,50 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Previous steps remain the same until Configure Load Balancer
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Tools
+        run: |
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          
+          # Install Helm
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          chmod 700 get_helm.sh
+          ./get_helm.sh --version v${HELM_VERSION}
+          
+          # Install eksctl
+          EKSCTL_VERSION=$(curl -sL https://api.github.com/repos/weaveworks/eksctl/releases/latest | jq -r '.tag_name' | cut -c 2-)
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/download/v${EKSCTL_VERSION}/eksctl_Linux_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ inputs.cluster_name }} \
+            --region ${{ env.AWS_REGION }}
+          
+          kubectl get svc
 
       - name: Configure Load Balancer
         run: |
-          # Set up OIDC provider
-          echo "Setting up OIDC provider..."
+          # Verify OIDC provider
+          echo "Verifying OIDC provider..."
           eksctl utils associate-iam-oidc-provider \
             --cluster ${{ inputs.cluster_name }} \
             --region ${{ env.AWS_REGION }} \
             --approve
 
-          # Create IAM policy (ignore if exists)
+          # Create policy
           echo "Creating IAM policy..."
           curl -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.11.0/docs/install/iam_policy.json
           
@@ -43,12 +75,14 @@ jobs:
             --policy-name AWSLoadBalancerControllerIAMPolicy \
             --policy-document file://iam_policy.json || true
 
-          # Delete existing service account if exists
-          echo "Cleaning up existing service account..."
-          kubectl delete serviceaccount -n kube-system aws-load-balancer-controller --ignore-not-found
-          
-          # Create service account manually
-          echo "Creating Kubernetes service account..."
+          # Get OIDC ID
+          OIDC_ID=$(aws eks describe-cluster \
+            --name ${{ inputs.cluster_name }} \
+            --query "cluster.identity.oidc.issuer" \
+            --output text | cut -d'/' -f5)
+
+          # Create service account
+          echo "Creating service account..."
           cat << EOF | kubectl apply -f -
           apiVersion: v1
           kind: ServiceAccount
@@ -59,7 +93,7 @@ jobs:
               eks.amazonaws.com/role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/AmazonEKSLoadBalancerControllerRole
           EOF
 
-          # Create IAM role and attach policy
+          # Create IAM role
           echo "Creating IAM role..."
           aws iam create-role \
             --role-name AmazonEKSLoadBalancerControllerRole \
@@ -69,35 +103,34 @@ jobs:
                 {
                   "Effect": "Allow",
                   "Principal": {
-                    "Federated": "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:oidc-provider/oidc.eks.${{ env.AWS_REGION }}.amazonaws.com/id/'$(aws eks describe-cluster --name ${{ inputs.cluster_name }} --query "cluster.identity.oidc.issuer" --output text | cut -d'/' -f5)'"
+                    "Federated": "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:oidc-provider/oidc.eks.${{ env.AWS_REGION }}.amazonaws.com/id/'${OIDC_ID}'"
                   },
                   "Action": "sts:AssumeRoleWithWebIdentity",
                   "Condition": {
                     "StringEquals": {
-                      "oidc.eks.${{ env.AWS_REGION }}.amazonaws.com/id/'$(aws eks describe-cluster --name ${{ inputs.cluster_name }} --query "cluster.identity.oidc.issuer" --output text | cut -d'/' -f5)':sub": "system:serviceaccount:kube-system:aws-load-balancer-controller"
+                      "oidc.eks.${{ env.AWS_REGION }}.amazonaws.com/id/'${OIDC_ID}':aud": "sts.amazonaws.com",
+                      "oidc.eks.${{ env.AWS_REGION }}.amazonaws.com/id/'${OIDC_ID}':sub": "system:serviceaccount:kube-system:aws-load-balancer-controller"
                     }
                   }
                 }
               ]
             }' || true
 
-          # Attach policy to role
-          echo "Attaching policy to role..."
+          # Attach policy
+          echo "Attaching policy..."
           aws iam attach-role-policy \
             --role-name AmazonEKSLoadBalancerControllerRole \
             --policy-arn arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/AWSLoadBalancerControllerIAMPolicy || true
 
-          # Verify service account
-          echo "Verifying service account..."
-          kubectl get serviceaccount aws-load-balancer-controller -n kube-system
-
       - name: Install Controller
         run: |
-          echo "Adding Helm repository..."
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update eks
 
-          echo "Installing Load Balancer Controller..."
+          # Clean up any existing deployment
+          kubectl delete deployment -n kube-system aws-load-balancer-controller --ignore-not-found
+
+          # Install controller
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
             --set clusterName=${{ inputs.cluster_name }} \
@@ -110,8 +143,11 @@ jobs:
 
       - name: Verify Installation
         run: |
-          echo "Waiting for deployment to be ready..."
+          echo "Waiting for deployment..."
           kubectl wait --for=condition=available --timeout=300s deployment/aws-load-balancer-controller -n kube-system
 
-          echo "Checking pod status..."
+          echo "Pod status:"
           kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+
+          echo "Checking logs:"
+          kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=20

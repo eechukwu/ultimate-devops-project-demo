@@ -37,78 +37,96 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Terraform Init
-        working-directory: ${{ env.TERRAFORM_DIR }}
+      # Get role ARNs from AWS
+      - name: Get Role ARNs
         run: |
-          # Remove any existing state
-          rm -rf .terraform
-          rm -f .terraform.lock.hcl
+          # First get the nodegroup name
+          NODEGROUP_NAME=$(aws eks list-nodegroups \
+            --cluster-name ${{ inputs.cluster_name }} \
+            --query 'nodegroups[0]' \
+            --output text)
           
-          # Initialize with backend config
-          terraform init
+          echo "Nodegroup name: ${NODEGROUP_NAME}"
           
-          # Show current state
-          echo "Current Terraform state:"
-          terraform show || echo "No state found"
-
-      - name: Download Terraform State
-        working-directory: ${{ env.TERRAFORM_DIR }}
-        run: |
-          terraform state pull || echo "No remote state found"
-          
-          # List available outputs
-          echo "Available Terraform outputs:"
-          terraform output || echo "No outputs found"
-
-      # Fallback to getting role ARNs from cluster
-      - name: Get Role ARNs from Cluster
-        run: |
-          # Get node role from cluster
+          # Get node role using nodegroup name
           NODE_ROLE=$(aws eks describe-nodegroup \
             --cluster-name ${{ inputs.cluster_name }} \
-            --region ${{ env.AWS_REGION }} \
-            --query 'nodegroups[0].nodeRole' \
+            --nodegroup-name ${NODEGROUP_NAME} \
+            --query 'nodegroup.nodeRole' \
             --output text)
           
           echo "NODE_ROLE=${NODE_ROLE}" >> $GITHUB_ENV
           
-          # Get IAM roles based on naming convention
+          # Get other roles
           ADMIN_ROLE=$(aws iam list-roles --query "Roles[?contains(RoleName, 'eks-admin')].Arn" --output text)
           DEV_ROLE=$(aws iam list-roles --query "Roles[?contains(RoleName, 'eks-developer')].Arn" --output text)
           READONLY_ROLE=$(aws iam list-roles --query "Roles[?contains(RoleName, 'eks-readonly')].Arn" --output text)
           
+          # Store roles in environment
           echo "ADMIN_ROLE=${ADMIN_ROLE}" >> $GITHUB_ENV
           echo "DEV_ROLE=${DEV_ROLE}" >> $GITHUB_ENV
           echo "READONLY_ROLE=${READONLY_ROLE}" >> $GITHUB_ENV
           
-          # Print roles for verification
+          # Print for verification
           echo "Found roles:"
           echo "Node Role: ${NODE_ROLE}"
           echo "Admin Role: ${ADMIN_ROLE}"
           echo "Dev Role: ${DEV_ROLE}"
           echo "Readonly Role: ${READONLY_ROLE}"
+          
+          # Verify roles exist
+          if [ -z "${NODE_ROLE}" ] || [ -z "${ADMIN_ROLE}" ] || [ -z "${DEV_ROLE}" ] || [ -z "${READONLY_ROLE}" ]; then
+            echo "Error: One or more required roles not found"
+            exit 1
+          fi
 
       - name: Configure kubectl
         run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          
           aws eks update-kubeconfig \
             --name ${{ inputs.cluster_name }} \
             --region ${{ env.AWS_REGION }}
           
-          # Verify connection
           kubectl get svc
 
       - name: Apply aws-auth ConfigMap
         run: |
-          # Create ConfigMap with found roles
-          cat aws-auth/configmap.yaml | \
-          sed "s|\${NODE_ROLE}|${NODE_ROLE}|g" | \
-          sed "s|\${ADMIN_ROLE}|${ADMIN_ROLE}|g" | \
-          sed "s|\${DEV_ROLE}|${DEV_ROLE}|g" | \
-          sed "s|\${READONLY_ROLE}|${READONLY_ROLE}|g" > aws-auth-new.yaml
+          # Create temp ConfigMap
+          cat << EOF > aws-auth-new.yaml
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: aws-auth
+            namespace: kube-system
+          data:
+            mapRoles: |
+              - rolearn: ${NODE_ROLE}
+                username: system:node:{{EC2PrivateDNSName}}
+                groups:
+                  - system:bootstrappers
+                  - system:nodes
+              - rolearn: ${ADMIN_ROLE}
+                username: admin-user
+                groups:
+                  - system:masters
+                  - eks-admins
+              - rolearn: ${DEV_ROLE}
+                username: developer-user
+                groups:
+                  - eks-developers
+              - rolearn: ${READONLY_ROLE}
+                username: readonly-user
+                groups:
+                  - eks-readonly
+          EOF
           
-          # Print ConfigMap for verification
-          echo "Generated aws-auth ConfigMap:"
-          cat aws-auth-new.yaml
+          # Verify ConfigMap syntax
+          kubectl apply -f aws-auth-new.yaml --dry-run=client
           
           # Apply ConfigMap
           kubectl apply -f aws-auth-new.yaml
+          
+          # Verify application
+          kubectl get configmap aws-auth -n kube-system -o yaml
