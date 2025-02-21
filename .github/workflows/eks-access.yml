@@ -15,6 +15,7 @@ env:
   AWS_REGION: eu-west-2
   TERRAFORM_DIR: ./terraform
   MAX_RETRIES: 3
+  TF_VERSION: "1.5.0"
 
 jobs:
   configure-access:
@@ -31,14 +32,26 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Install kubectl directly instead of using the action
+      # Add Terraform setup step
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # Initialize Terraform
+      - name: Terraform Init
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: |
+          terraform init
+
+      # Install kubectl
       - name: Install kubectl
         run: |
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
           kubectl version --client
 
-      # Configure kubectl for EKS before running other commands
+      # Configure kubectl
       - name: Configure kubectl
         run: |
           aws eks update-kubeconfig \

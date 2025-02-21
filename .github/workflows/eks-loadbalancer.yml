@@ -39,7 +39,6 @@ jobs:
           # Install kubectl
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-          kubectl version --client
           
           # Install Helm
           curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
@@ -50,29 +49,35 @@ jobs:
           curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
           sudo mv /tmp/eksctl /usr/local/bin
 
-      # Configure kubectl for EKS before other operations
       - name: Configure kubectl
         run: |
           aws eks update-kubeconfig \
             --name ${{ inputs.cluster_name }} \
             --region ${{ env.AWS_REGION }}
           
-          # Verify connection
+          # Verify cluster access
           kubectl get svc
+          kubectl get nodes
 
       - name: Configure Load Balancer
         run: |
+          # Set up OIDC provider
+          echo "Setting up OIDC provider..."
           eksctl utils associate-iam-oidc-provider \
             --cluster ${{ inputs.cluster_name }} \
             --region ${{ env.AWS_REGION }} \
             --approve
 
+          # Create IAM policy
+          echo "Creating IAM policy..."
           curl -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.11.0/docs/install/iam_policy.json
           
           aws iam create-policy \
             --policy-name AWSLoadBalancerControllerIAMPolicy \
             --policy-document file://iam_policy.json || true
 
+          # Create service account
+          echo "Creating service account..."
           eksctl create iamserviceaccount \
             --cluster=${{ inputs.cluster_name }} \
             --namespace=kube-system \
@@ -83,14 +88,24 @@ jobs:
             --override-existing-serviceaccounts \
             --approve
 
+          # Verify service account
+          echo "Verifying service account..."
+          kubectl get serviceaccount aws-load-balancer-controller -n kube-system
+
       - name: Install Controller
         run: |
+          echo "Adding Helm repository..."
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update eks
 
-          # Add verification step
+          echo "Verifying kube-system namespace..."
           kubectl get namespace kube-system || kubectl create namespace kube-system
 
+          echo "Installing Load Balancer Controller..."
+          # First remove any existing deployment
+          kubectl delete deployment aws-load-balancer-controller -n kube-system --ignore-not-found
+
+          # Install with increased timeout and progress monitoring
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
             --set clusterName=${{ inputs.cluster_name }} \
@@ -99,4 +114,24 @@ jobs:
             --set region=${{ env.AWS_REGION }} \
             --set vpcId=${{ inputs.vpc_id }} \
             --wait \
-            --timeout 15m
+            --timeout 30m \
+            --debug
+
+      - name: Verify Installation
+        run: |
+          echo "Verifying Load Balancer Controller installation..."
+          
+          # Wait for deployment to be available
+          kubectl wait --for=condition=available --timeout=300s deployment/aws-load-balancer-controller -n kube-system || true
+          
+          # Check deployment status
+          echo "Deployment status:"
+          kubectl get deployment aws-load-balancer-controller -n kube-system -o wide
+          
+          # Check pods
+          echo "Pod status:"
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+          
+          # Check logs
+          echo "Controller logs:"
+          kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=50
