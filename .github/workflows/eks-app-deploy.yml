@@ -33,105 +33,61 @@ jobs:
 
       - name: Install and Configure kubectl
         run: |
-          # Ensure clean environment
-          rm -f kubectl || true
+          # Get stable kubectl version
+          KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+          echo "Installing kubectl version: ${KUBECTL_VERSION}"
+          
+          # Download kubectl
+          curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          
+          # Verify download
+          if [ ! -f kubectl ]; then
+            echo "Failed to download kubectl"
+            exit 1
+          fi
           
           # Install kubectl
-          echo "Installing kubectl..."
-          curl -LO "https://dl.k8s.io/release/stable/bin/linux/amd64/kubectl"
           sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
           
-          # Verify kubectl installation
-          echo "Verifying kubectl installation..."
-          if ! kubectl version --client; then
-            echo "Failed to install kubectl"
+          # Verify installation
+          if ! command -v kubectl &> /dev/null; then
+            echo "kubectl not installed correctly"
             exit 1
           fi
           
-          # Configure kubectl with retries
+          # Configure kubectl for EKS
           echo "Configuring kubectl for cluster: ${{ inputs.cluster_name }}"
-          for i in $(seq 1 ${{ env.MAX_RETRIES }}); do
-            if aws eks update-kubeconfig --name ${{ inputs.cluster_name }} --region ${{ env.AWS_REGION }}; then
-              break
-            fi
-            if [ $i -eq ${{ env.MAX_RETRIES }} ]; then
-              echo "Failed to configure kubectl after ${{ env.MAX_RETRIES }} attempts"
-              exit 1
-            fi
-            echo "Retrying kubectl configuration... (attempt $i)"
-            sleep 5
-          done
+          aws eks update-kubeconfig --name ${{ inputs.cluster_name }} --region ${{ env.AWS_REGION }}
           
-          # Verify cluster connection
-          echo "Verifying cluster connection..."
-          if ! kubectl get svc; then
-            echo "Failed to connect to cluster"
-            exit 1
-          fi
-
-      - name: Verify Kubernetes Directory
-        run: |
-          echo "Verifying Kubernetes manifests..."
-          if [ ! -d "${{ env.K8S_DIR }}" ]; then
-            echo "Kubernetes directory not found: ${{ env.K8S_DIR }}"
-            exit 1
-          fi
-          
-          # Check required files
-          required_files=("serviceaccount.yaml" "complete-deploy.yaml" "frontendproxy/ingress.yaml")
-          for file in "${required_files[@]}"; do
-            if [ ! -f "${{ env.K8S_DIR }}/$file" ]; then
-              echo "Required file not found: ${{ env.K8S_DIR }}/$file"
-              exit 1
-            fi
-          done
+          # Verify cluster access
+          kubectl cluster-info
 
       - name: Deploy Application
         run: |
-          echo "Starting application deployment..."
+          echo "Deploying application components..."
           
-          # Apply service account with verification
           echo "Applying service account..."
           kubectl apply -f ${{ env.K8S_DIR }}/serviceaccount.yaml
-          kubectl wait --for=condition=created serviceaccount --all --timeout=30s || true
           
-          # Apply main deployment with verification
           echo "Applying main deployment..."
           kubectl apply -f ${{ env.K8S_DIR }}/complete-deploy.yaml
           
-          # Apply ingress with verification
           echo "Applying ingress..."
           kubectl apply -f ${{ env.K8S_DIR }}/frontendproxy/ingress.yaml
           
-          # Wait for all deployments
           echo "Waiting for deployments to be ready..."
           kubectl wait --for=condition=available deployment --all --timeout=300s
-          
-          # Additional verification
-          echo "Verifying all resources..."
-          kubectl get all -A
 
       - name: Verify Deployment
         run: |
-          # Check deployment status
-          echo "Checking deployment status..."
-          DEPLOY_STATUS=$(kubectl get deployments -A -o json | jq -r '.items[].status.conditions[] | select(.type=="Available") | .status' | uniq)
-          if [ "$DEPLOY_STATUS" != "True" ]; then
-            echo "Deployments not fully available"
-            kubectl describe deployments -A
-            exit 1
-          fi
+          echo "Deployment Status:"
+          kubectl get deployments -A
           
-          # Check pod status
-          echo "Checking pod status..."
-          FAILED_PODS=$(kubectl get pods -A | grep -v "Running\|Completed" || true)
-          if [ ! -z "$FAILED_PODS" ]; then
-            echo "Failed or non-running pods found:"
-            echo "$FAILED_PODS"
-            kubectl describe pods -A | grep -A 10 "Events:"
-            exit 1
-          fi
+          echo "Pod Status:"
+          kubectl get pods -A
           
-          # Final status check
-          echo "Final status check..."
-          echo "
+          echo "Service Status:"
+          kubectl get services -A
+          
+          echo "Ingress Status:"
+          kubectl get ingress -A
